@@ -42897,6 +42897,73 @@ fn test_extended_gcd() {
 }
 
 #[test]
+fn test_extended_gcd_first_cofactor() {
+    let test = |s, t, gcd, x| {
+        let a = Natural::from_str(s).unwrap();
+        let b = Natural::from_str(t).unwrap();
+
+        let (full_gcd, full_x, full_y) = (&a).extended_gcd(&b);
+        assert_eq!(full_gcd.to_string(), gcd);
+        assert_eq!(full_x.to_string(), x);
+
+        let (result_gcd, result_x) = a.clone().extended_gcd_first_cofactor(b.clone());
+        assert!(result_gcd.is_valid());
+        assert!(result_x.is_valid());
+        assert_eq!(result_gcd.to_string(), gcd);
+        assert_eq!(result_x.to_string(), x);
+
+        // Bezout identity, using the second cofactor from the full computation.
+        assert_eq!(
+            Integer::from(&a) * &result_x + Integer::from(&b) * &full_y,
+            Integer::from(&result_gcd)
+        );
+    };
+    // zeros
+    test("0", "0", "0", "0");
+    test("0", "1", "1", "0");
+    test("1", "0", "1", "1");
+    // ones
+    test("1", "1", "1", "0");
+    test("1", "6", "1", "1");
+    test("6", "1", "1", "0");
+    // equal args
+    test("6", "6", "6", "0");
+    test(
+        "123456789012345678901234567890",
+        "123456789012345678901234567890",
+        "123456789012345678901234567890",
+        "0",
+    );
+    // one-limb, no swap needed
+    test("8", "12", "4", "-1");
+    test("54", "24", "6", "1");
+    test("3", "5", "1", "2");
+    test("240", "46", "2", "-9");
+    // multi-limb, same limb count, no swap needed
+    test("12345678987654321", "98765432123456789", "1", "1777777788");
+    test(
+        "12345678987654321",
+        "98765432123456827",
+        "37",
+        "-577153682403132",
+    );
+    // `a` has fewer limbs than `b`: forces the `extended_gcd_helper` swap fallback.
+    test(
+        "5",
+        "340282366920938463463374607431768211458",
+        "1",
+        "-136112946768375385385349842972707284583",
+    );
+    test(
+        "46",
+        "12676506002282294014963705882000531",
+        "1",
+        "1377881087204597175539533248043536",
+    );
+    test("1", "340282366920938463463374607431768211456", "1", "1");
+}
+
+#[test]
 fn limbs_extended_gcd_properties() {
     let mut config = GenConfig::new();
     config.insert("mean_length_n", 512);
@@ -43024,5 +43091,60 @@ fn extended_gcd_properties() {
         assert_eq!(gcd, u_gcd);
         assert_eq!(x, u_x);
         assert_eq!(y, u_y);
+    });
+}
+
+// Differential test: `extended_gcd_first_cofactor` must always agree with the gcd and first
+// cofactor returned by the full three-cofactor `extended_gcd`, and the returned pair must satisfy
+// the Bezout identity (using the second cofactor from the full computation, which is not
+// otherwise checked here since it is not part of `extended_gcd_first_cofactor`'s contract).
+fn extended_gcd_first_cofactor_properties_helper(a: &Natural, b: &Natural) {
+    let (gcd, x) = a.clone().extended_gcd_first_cofactor(b.clone());
+    assert!(gcd.is_valid());
+    assert!(x.is_valid());
+
+    let (full_gcd, full_x, full_y) = a.extended_gcd(b);
+    assert_eq!(gcd, full_gcd, "gcd mismatch for ({a}, {b})");
+    assert_eq!(x, full_x, "first cofactor mismatch for ({a}, {b})");
+
+    assert_eq!(
+        Integer::from(a) * &x + Integer::from(b) * &full_y,
+        Integer::from(&gcd),
+        "Bezout identity failed for ({a}, {b})"
+    );
+}
+
+#[test]
+fn extended_gcd_first_cofactor_properties() {
+    let mut config = GenConfig::new();
+    config.insert("mean_bits_n", 2048);
+    config.insert("mean_stripe_n", 512 << Limb::LOG_WIDTH);
+
+    // Arbitrary pairs: covers zeros, ones, small and large values, both orderings of limb
+    // count (so both the fast path and the `xs.len() < ys.len()` fallback are exercised), and
+    // both orderings of numeric value.
+    natural_pair_gen().test_properties_with_config(&config, |(a, b)| {
+        extended_gcd_first_cofactor_properties_helper(&a, &b);
+    });
+
+    // Pairs sharing a common factor, i.e. `(x * y, y * z)`: exercises the case where the gcd is
+    // large relative to the inputs.
+    natural_pair_gen_var_4().test_properties_with_config(&config, |(a, b)| {
+        extended_gcd_first_cofactor_properties_helper(&a, &b);
+    });
+
+    // Equal-argument, zero-argument, and one-argument special cases, plus one-limb values from
+    // the exhaustive/random `Natural` generator.
+    natural_gen().test_properties(|x| {
+        extended_gcd_first_cofactor_properties_helper(&x, &x);
+        extended_gcd_first_cofactor_properties_helper(&x, &Natural::ZERO);
+        extended_gcd_first_cofactor_properties_helper(&Natural::ZERO, &x);
+        extended_gcd_first_cofactor_properties_helper(&x, &Natural::ONE);
+        extended_gcd_first_cofactor_properties_helper(&Natural::ONE, &x);
+    });
+
+    // Machine-word-sized values on both sides, matching the `Small`/`Small` fast path.
+    unsigned_pair_gen_var_27::<Limb>().test_properties(|(a, b)| {
+        extended_gcd_first_cofactor_properties_helper(&Natural::from(a), &Natural::from(b));
     });
 }

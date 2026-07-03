@@ -758,6 +758,30 @@ fn extended_gcd_helper(a: Natural, b: Natural) -> (Natural, Integer, Integer) {
     (gcd, s, t)
 }
 
+// `limbs_extended_gcd` swaps its arguments internally whenever `xs.len() < ys.len()`, and only
+// ever tracks the cofactor of the argument that ends up longer after the swap (see
+// `extended_gcd_helper` above, which recovers the cofactor of the original first argument via
+// `swap(&mut s, &mut t)` in that case). So when `a.limb_count() >= b.limb_count()`, no swap
+// happens, and calling `limbs_extended_gcd` directly below is equivalent, limb for limb, to the
+// first half of `extended_gcd_helper`; we simply stop before it computes `t`. When `a` is shorter
+// than `b`, recovering `s` still requires the full computation (`t` is needed to correct for the
+// swap), so we fall back to `extended_gcd_helper` and discard `t`.
+fn extended_gcd_first_cofactor_helper(a: Natural, b: Natural) -> (Natural, Integer) {
+    if a.limb_count() < b.limb_count() {
+        let (gcd, s, _t) = extended_gcd_helper(a, b);
+        return (gcd, s);
+    }
+    let mut xs = a.to_limbs_asc();
+    let mut ys = b.to_limbs_asc();
+    let mut gs = vec![0; ys.len()];
+    let mut ss = vec![0; ys.len() + 1];
+    let (g_len, ss_sign) = limbs_extended_gcd(&mut gs, &mut ss, &mut xs, &mut ys);
+    gs.truncate(g_len);
+    let gcd = Natural::from_owned_limbs_asc(gs);
+    let s = Integer::from_sign_and_abs(ss_sign, Natural::from_owned_limbs_asc(ss));
+    (gcd, s)
+}
+
 impl ExtendedGcd for Natural {
     type Gcd = Self;
     type Cofactor = Integer;
@@ -994,6 +1018,61 @@ impl ExtendedGcd<&Natural> for &Natural {
                 (Natural::from(gcd), Integer::from(s), Integer::from(t))
             }
             (a, b) => extended_gcd_helper(a.clone(), b.clone()),
+        }
+    }
+}
+
+impl Natural {
+    /// Computes the GCD (greatest common divisor) of two [`Natural`]s $a$ and $b$, and the
+    /// coefficient $x$ in Bézout's identity $ax+by=\gcd(a,b)$, without computing $y$.
+    ///
+    /// This is a variant of [`extended_gcd`](malachite_base::num::arithmetic::traits::ExtendedGcd)
+    /// for callers that only need the first Bézout coefficient. Deriving $y$ from the internal
+    /// state of the algorithm costs an extra full-precision multiplication and exact division, so
+    /// skipping it is cheaper than computing both coefficients and discarding one. The gcd and $x$
+    /// returned are identical to `self.extended_gcd(other)`'s first two components.
+    ///
+    /// The full specification of $x$ is the same as for
+    /// [`extended_gcd`](malachite_base::num::arithmetic::traits::ExtendedGcd):
+    ///
+    /// - $f(0, 0) = (0, 0)$.
+    /// - $f(a, ak) = (a, 1)$ if $a > 0$ and $k \neq 1$.
+    /// - $f(bk, b) = (b, 0)$ if $b > 0$.
+    /// - $f(a, b) = (g, x)$ if $a \neq 0$ and $b \neq 0$ and $\gcd(a, b) \neq \min(a, b)$, where $g
+    ///   = \gcd(a, b) \geq 0$, $ax + by = g$ for some $y$, and $x \leq \lfloor b/g \rfloor$.
+    ///
+    /// # Worst-case complexity
+    /// $T(n) = O(n (\log n)^2 \log\log n)$
+    ///
+    /// $M(n) = O(n \log n)$
+    ///
+    /// where $T$ is time, $M$ is additional memory, and $n$ is `max(self.significant_bits(),
+    /// other.significant_bits())`.
+    ///
+    /// # Examples
+    /// ```
+    /// use malachite_nz::natural::Natural;
+    ///
+    /// assert_eq!(
+    ///     Natural::from(3u32).extended_gcd_first_cofactor(Natural::from(5u32)),
+    ///     (Natural::from(1u32), 2.into())
+    /// );
+    /// assert_eq!(
+    ///     Natural::from(240u32).extended_gcd_first_cofactor(Natural::from(46u32)),
+    ///     (Natural::from(2u32), (-9).into())
+    /// );
+    /// ```
+    pub fn extended_gcd_first_cofactor(self, other: Self) -> (Self, Integer) {
+        match (self, other) {
+            (Self::ZERO, Self::ZERO) => (Self::ZERO, Integer::ZERO),
+            (a, b) if a == b => (b, Integer::ZERO),
+            (Self::ZERO, b) => (b, Integer::ZERO),
+            (a, Self::ZERO) => (a, Integer::ONE),
+            (Self(Small(x)), Self(Small(y))) => {
+                let (gcd, s, _t) = x.extended_gcd(y);
+                (Self::from(gcd), Integer::from(s))
+            }
+            (a, b) => extended_gcd_first_cofactor_helper(a, b),
         }
     }
 }
